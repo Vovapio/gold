@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 # === Настройки ===
 TICKER = "TGLD"
 BOARD = "TQTF"
-DAYS_BACK = 30  # сколько дней брать (примерно месяц)
+DAYS_BACK = 120  # берём несколько месяцев, чтобы видеть месячные изменения
 
 # === Формируем даты ===
 till = datetime.now().date()
@@ -15,7 +15,6 @@ url = f"https://iss.moex.com/iss/engines/stock/markets/shares/boards/{BOARD}/sec
 params = {"from": from_.isoformat(), "till": till.isoformat(), "interval": "1"}
 
 print(f"⏳ Загружаем данные за период {from_} — {till}...")
-
 
 r = requests.get(url, params=params)
 r.raise_for_status()
@@ -30,39 +29,29 @@ if "begin" not in df.columns or "close" not in df.columns:
 
 df["begin"] = pd.to_datetime(df["begin"])
 df["close"] = pd.to_numeric(df["close"], errors="coerce")
-df = df.dropna(subset=["begin", "close"])
-df["date"] = df["begin"].dt.date
+df = df.dropna(subset=["begin", "close"]).sort_values("begin")
 
-# === Расчёт разницы 10:00 → 10:10 ===
+df["month"] = df["begin"].dt.to_period("M")
+
+# === Расчёт месячных скачков цены ===
 results = []
-for d, chunk in df.groupby("date"):
-    t_start = pd.Timestamp(datetime.combine(d, datetime.min.time()).replace(hour=10, minute=0))
-    t_end = t_start.replace(minute=10)
-
-    p10 = chunk.loc[chunk["begin"] == t_start, "close"]
-    if p10.empty:
-        p10 = chunk.loc[chunk["begin"] >= t_start, "close"].head(1)
-    p1010 = chunk.loc[chunk["begin"] == t_end, "close"]
-    if p1010.empty:
-        p1010 = chunk.loc[chunk["begin"] <= t_end, "close"].tail(1)
-
-    if p10.empty or p1010.empty:
-        continue
-
-    p10v, p1010v = float(p10.iloc[0]), float(p1010.iloc[0])
-    diff = p1010v - p10v
-    diff_pct = (diff / p10v) * 100 if p10v != 0 else None
+for period, chunk in df.groupby("month"):
+    chunk = chunk.sort_values("begin")
+    first_close = float(chunk.iloc[0]["close"])
+    last_close = float(chunk.iloc[-1]["close"])
+    diff = last_close - first_close
+    diff_pct = (diff / first_close) * 100 if first_close != 0 else None
 
     results.append({
-        "date": d,
-        "price_10_00": p10v,
-        "price_10_10": p1010v,
+        "month": period.to_timestamp().date(),
+        "price_start": first_close,
+        "price_end": last_close,
         "diff_abs": diff,
-        "diff_pct": diff_pct
+        "diff_pct": diff_pct,
     })
 
-out = pd.DataFrame(results).sort_values("date")
-out.to_csv("tgld_10_00_to_10_10_diffs.csv", index=False)
+out = pd.DataFrame(results).sort_values("month")
+out.to_csv("tgld_monthly_price_jumps.csv", index=False)
 
-print("\n✅ Готово! Результаты сохранены в tgld_10_00_to_10_10_diffs.csv")
-print(out.head(10))
+print("\n✅ Готово! Результаты сохранены в tgld_monthly_price_jumps.csv")
+print(out)
