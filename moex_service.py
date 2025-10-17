@@ -12,12 +12,14 @@ import argparse
 import datetime as dt
 import io
 import sys
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Tuple
 
 import pandas as pd
 import requests
+from requests import Timeout
 
 MOEX_URL_TEMPLATE = (
     "https://iss.moex.com/iss/engines/stock/markets/shares/boards/{board}/"
@@ -94,7 +96,10 @@ def fetch_candles(
     url = MOEX_URL_TEMPLATE.format(board=board, ticker=ticker)
     frames: List[pd.DataFrame] = []
 
-    for chunk_start, chunk_end in _iterate_date_ranges(date_from, date_till, chunk_days):
+    ranges = deque(_iterate_date_ranges(date_from, date_till, chunk_days))
+
+    while ranges:
+        chunk_start, chunk_end = ranges.popleft()
         params = {
             "from": chunk_start.isoformat(),
             "till": chunk_end.isoformat(),
@@ -103,6 +108,31 @@ def fetch_candles(
 
         try:
             frames.extend(_fetch_paginated(url, params))
+        except Timeout as exc:
+            days = (chunk_end - chunk_start).days + 1
+
+            if days == 1:
+                raise RuntimeError(
+                    "Ошибка при обращении к MOEX: "
+                    f"{exc} (диапазон {chunk_start}..{chunk_end})"
+                ) from exc
+
+            offset = max(days // 2, 1) - 1
+            split_point = chunk_start + dt.timedelta(days=offset)
+
+            first_range = (chunk_start, min(split_point, chunk_end))
+            second_start = split_point + dt.timedelta(days=1)
+
+            print(
+                "⏱️  Таймаут при запросе диапазона",
+                f"{chunk_start}..{chunk_end}.",
+                "Пробуем меньшие интервалы...",
+            )
+
+            if second_start <= chunk_end:
+                ranges.appendleft((second_start, chunk_end))
+            if first_range[0] <= first_range[1]:
+                ranges.appendleft(first_range)
         except requests.RequestException as exc:
             raise RuntimeError(
                 "Ошибка при обращении к MOEX: "
