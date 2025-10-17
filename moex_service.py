@@ -1,8 +1,7 @@
 """FastAPI service for MOEX candle analysis."""
-from __future__ import annotations
 
+import datetime as dt
 import io
-from datetime import date, datetime, time
 from typing import List, Optional
 
 import pandas as pd
@@ -25,7 +24,7 @@ app = FastAPI(
 
 
 class CandleDiff(BaseModel):
-    date: date = Field(..., description="Дата торгового дня")
+    date: dt.date = Field(..., description="Дата торгового дня")
     start_price: float = Field(..., description="Цена в момент start_time")
     end_price: float = Field(..., description="Цена в момент end_time")
     diff_abs: float = Field(..., description="Абсолютная разница цен")
@@ -38,14 +37,14 @@ class DiffResponse(BaseModel):
     ticker: str
     board: str
     interval: int = Field(..., description="Интервал свечей в минутах")
-    start_time: time
-    end_time: time
+    start_time: dt.time
+    end_time: dt.time
     results: List[CandleDiff]
 
 
-def _parse_time(value: str, name: str) -> time:
+def _parse_time(value: str, name: str) -> dt.time:
     try:
-        return datetime.strptime(value, "%H:%M").time()
+        return dt.datetime.strptime(value, "%H:%M").time()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid {name} format. Use HH:MM") from exc
 
@@ -55,8 +54,8 @@ def fetch_candles(
     ticker: str,
     board: str,
     interval: int,
-    date_from: date,
-    date_till: date,
+    date_from: dt.date,
+    date_till: dt.date,
 ) -> pd.DataFrame:
     url = MOEX_URL_TEMPLATE.format(board=board, ticker=ticker)
     base_params = {
@@ -97,8 +96,8 @@ def fetch_candles(
 def get_candle_diff(
     ticker: str = Query("TGLD", description="Код бумаги на MOEX"),
     board: str = Query("TQTF", description="Идентификатор режима торгов"),
-    date_from: date = Query(..., description="Начальная дата (YYYY-MM-DD)"),
-    date_till: date = Query(..., description="Конечная дата (YYYY-MM-DD)"),
+    date_from: dt.date = Query(..., description="Начальная дата (YYYY-MM-DD)"),
+    date_till: dt.date = Query(..., description="Конечная дата (YYYY-MM-DD)"),
     start_time: str = Query("09:55", description="Стартовое время HH:MM"),
     end_time: str = Query("10:15", description="Конечное время HH:MM"),
     interval: int = Query(1, ge=1, le=60, description="Интервал свечей в минутах"),
@@ -123,9 +122,13 @@ def get_candle_diff(
     results: List[CandleDiff] = []
 
     for day, chunk in df.groupby("date"):
-        base_dt = datetime.combine(day, time())
-        ts_start = pd.Timestamp(base_dt.replace(hour=start_time_obj.hour, minute=start_time_obj.minute))
-        ts_end = pd.Timestamp(base_dt.replace(hour=end_time_obj.hour, minute=end_time_obj.minute))
+        base_dt = dt.datetime.combine(day, dt.time())
+        ts_start = pd.Timestamp(
+            base_dt.replace(hour=start_time_obj.hour, minute=start_time_obj.minute)
+        )
+        ts_end = pd.Timestamp(
+            base_dt.replace(hour=end_time_obj.hour, minute=end_time_obj.minute)
+        )
 
         price_start = chunk.loc[chunk["begin"] == ts_start, "close"]
         if price_start.empty:
