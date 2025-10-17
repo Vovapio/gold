@@ -14,7 +14,7 @@ import io
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -84,25 +84,65 @@ def fetch_candles(
     interval: int,
     date_from: dt.date,
     date_till: dt.date,
+    chunk_days: int = 5,
 ) -> pd.DataFrame:
     """Load all intraday candles for the requested period."""
 
+    if chunk_days < 1:
+        raise ValueError("chunk_days должен быть положительным")
+
     url = MOEX_URL_TEMPLATE.format(board=board, ticker=ticker)
-    base_params = {
-        "from": date_from.isoformat(),
-        "till": date_till.isoformat(),
-        "interval": str(interval),
-    }
+    frames: List[pd.DataFrame] = []
+
+    for chunk_start, chunk_end in _iterate_date_ranges(date_from, date_till, chunk_days):
+        params = {
+            "from": chunk_start.isoformat(),
+            "till": chunk_end.isoformat(),
+            "interval": str(interval),
+        }
+
+        try:
+            frames.extend(_fetch_paginated(url, params))
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "Ошибка при обращении к MOEX: "
+                f"{exc} (диапазон {chunk_start}..{chunk_end})"
+            ) from exc
+
+    if not frames:
+        raise ValueError("Не удалось получить свечи по заданным параметрам")
+
+    df = pd.concat(frames, ignore_index=True)
+    df["begin"] = pd.to_datetime(df["begin"], errors="coerce")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["begin", "close"])
+    df["date"] = df["begin"].dt.date
+    return df
+
+
+def _iterate_date_ranges(
+    date_from: dt.date, date_till: dt.date, chunk_days: int
+) -> Iterator[Tuple[dt.date, dt.date]]:
+    """Yield inclusive date ranges split into chunks of `chunk_days`."""
+
+    current = date_from
+    delta = dt.timedelta(days=chunk_days - 1)
+
+    while current <= date_till:
+        chunk_end = min(current + delta, date_till)
+        yield current, chunk_end
+        current = chunk_end + dt.timedelta(days=1)
+
+
+def _fetch_paginated(url: str, params: dict) -> List[pd.DataFrame]:
+    """Fetch a paginated MOEX candle response for a single date range."""
 
     frames: List[pd.DataFrame] = []
     start = 0
 
     while True:
-        params = {**base_params, "start": start}
-        try:
-            response = requests.get(url, params=params, timeout=30)
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Ошибка при обращении к MOEX: {exc}") from exc
+        page_params = {**params, "start": start}
+        response = requests.get(url, params=page_params, timeout=15)
 
         if response.status_code == 404:
             raise ValueError("Тикер или режим торгов не найдены на MOEX")
@@ -116,15 +156,7 @@ def fetch_candles(
         frames.append(chunk)
         start += len(chunk)
 
-    if not frames:
-        raise ValueError("Не удалось получить свечи по заданным параметрам")
-
-    df = pd.concat(frames, ignore_index=True)
-    df["begin"] = pd.to_datetime(df["begin"], errors="coerce")
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df = df.dropna(subset=["begin", "close"])
-    df["date"] = df["begin"].dt.date
-    return df
+    return frames
 
 
 def calculate_diffs(
