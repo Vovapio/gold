@@ -1,6 +1,8 @@
+import io
+from datetime import datetime, timedelta
+
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
 
 # === Настройки ===
 TICKER = "TGLD"
@@ -12,22 +14,41 @@ till = datetime.now().date()
 from_ = till - timedelta(days=DAYS_BACK)
 
 url = f"https://iss.moex.com/iss/engines/stock/markets/shares/boards/{BOARD}/securities/{TICKER}/candles.csv"
-params = {"from": from_.isoformat(), "till": till.isoformat(), "interval": "1"}
+base_params = {"from": from_.isoformat(), "till": till.isoformat(), "interval": "1"}
 
 print(f"⏳ Загружаем данные за период {from_} — {till}...")
 
 
-r = requests.get(url, params=params)
-r.raise_for_status()
+def load_all_pages() -> pd.DataFrame:
+    """Скачиваем все страницы свечек (по умолчанию MOEX отдаёт ~500 строк за раз)."""
 
-with open("candles_tgld.csv", "wb") as f:
-    f.write(r.content)
+    frames = []
+    start = 0
+
+    while True:
+        params = {**base_params, "start": start}
+        r = requests.get(url, params=params)
+        r.raise_for_status()
+
+        chunk = pd.read_csv(io.StringIO(r.text), sep=";", skiprows=2)
+        if chunk.empty:
+            break
+
+        frames.append(chunk)
+        start += len(chunk)
+        print(f"  → Получено {len(chunk)} строк (start={start})")
+
+    if not frames:
+        raise ValueError("Не удалось получить данные от MOEX")
+
+    df_all = pd.concat(frames, ignore_index=True)
+    df_all.to_csv("candles_tgld.csv", sep=";", index=False)
+    return df_all
+
+
+df = load_all_pages()
 
 # === Читаем и чистим ===
-df = pd.read_csv("candles_tgld.csv", sep=";", skiprows=1)
-if "begin" not in df.columns or "close" not in df.columns:
-    raise ValueError(f"Не найдены нужные столбцы: {df.columns.tolist()}")
-
 df["begin"] = pd.to_datetime(df["begin"])
 df["close"] = pd.to_numeric(df["close"], errors="coerce")
 df = df.dropna(subset=["begin", "close"])
