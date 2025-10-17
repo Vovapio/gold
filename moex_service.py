@@ -58,6 +58,25 @@ def parse_date(value: str) -> dt.date:
         ) from exc
 
 
+def prompt_date(message: str) -> dt.date:
+    """Interactively request a date value from the user."""
+
+    while True:
+        try:
+            raw = input(message).strip()
+        except EOFError as exc:  # pragma: no cover - defensive fallback
+            raise SystemExit(1) from exc
+
+        if not raw:
+            print("Поле не может быть пустым. Повторите ввод.")
+            continue
+
+        try:
+            return parse_date(raw)
+        except argparse.ArgumentTypeError as exc:
+            print(exc)
+
+
 def fetch_candles(
     *,
     ticker: str,
@@ -259,13 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--date-from",
         type=parse_date,
-        required=True,
         help="Начальная дата периода в формате YYYY-MM-DD",
     )
     parser.add_argument(
         "--date-till",
         type=parse_date,
-        required=True,
         help="Конечная дата периода в формате YYYY-MM-DD",
     )
     parser.add_argument(
@@ -302,6 +319,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.date_from is None:
+        args.date_from = prompt_date("Введите начальную дату (YYYY-MM-DD): ")
+
+    if args.date_till is None:
+        args.date_till = prompt_date("Введите конечную дату (YYYY-MM-DD): ")
 
     if args.date_from > args.date_till:
         parser.error("--date-from не может быть больше, чем --date-till")
