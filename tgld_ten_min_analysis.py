@@ -16,6 +16,7 @@ params = {"from": from_.isoformat(), "till": till.isoformat(), "interval": "1"}
 
 print(f"⏳ Загружаем данные за период {from_} — {till}...")
 
+
 r = requests.get(url, params=params)
 r.raise_for_status()
 
