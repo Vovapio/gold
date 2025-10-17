@@ -1,14 +1,13 @@
-"""Command-line utility for MOEX candle analysis.
+"""Interactive terminal tool for MOEX candle analysis.
 
-The script downloads intraday candles for a given ticker/board from MOEX,
-calculates the price difference between two time marks for every trading day
-in the selected period and stores the result as a CSV table. A formatted view
-of the table is also printed to the terminal.
+The script asks the user for a date and time range along with the fund (ticker),
+downloads intraday candles from MOEX, calculates the price difference between
+two time marks for every trading day and stores the result as a CSV table. A
+formatted view of the table is also printed to the terminal.
 """
 
 from __future__ import annotations
 
-import argparse
 import datetime as dt
 import io
 import sys
@@ -26,6 +25,9 @@ MOEX_URL_TEMPLATE = (
     "securities/{ticker}/candles.csv"
 )
 
+DEFAULT_BOARD = "TQTF"
+DEFAULT_INTERVAL = 1
+
 
 @dataclass
 class CandleDiff:
@@ -39,23 +41,21 @@ class CandleDiff:
 
 
 def parse_time(value: str) -> dt.time:
-    """Parse HH:MM time strings for CLI arguments."""
+    """Parse HH:MM time strings."""
 
     try:
         return dt.datetime.strptime(value, "%H:%M").time()
-    except ValueError as exc:  # pragma: no cover - handled as CLI error
-        raise argparse.ArgumentTypeError(
-            f"Некорректный формат времени '{value}'. Используйте HH:MM"
-        ) from exc
+    except ValueError as exc:  # pragma: no cover - handled via prompt loop
+        raise ValueError(f"Некорректный формат времени '{value}'. Используйте HH:MM") from exc
 
 
 def parse_date(value: str) -> dt.date:
-    """Parse YYYY-MM-DD date strings for CLI arguments."""
+    """Parse YYYY-MM-DD date strings."""
 
     try:
         return dt.datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as exc:  # pragma: no cover - handled as CLI error
-        raise argparse.ArgumentTypeError(
+    except ValueError as exc:  # pragma: no cover - handled via prompt loop
+        raise ValueError(
             f"Некорректный формат даты '{value}'. Используйте YYYY-MM-DD"
         ) from exc
 
@@ -66,8 +66,9 @@ def prompt_date(message: str) -> dt.date:
     while True:
         try:
             raw = input(message).strip()
-        except EOFError as exc:  # pragma: no cover - defensive fallback
-            raise SystemExit(1) from exc
+        except EOFError:
+            print("\nВвод прерван. Выход.")
+            raise SystemExit(1) from None
 
         if not raw:
             print("Поле не может быть пустым. Повторите ввод.")
@@ -75,8 +76,48 @@ def prompt_date(message: str) -> dt.date:
 
         try:
             return parse_date(raw)
-        except argparse.ArgumentTypeError as exc:
+        except ValueError as exc:
             print(exc)
+
+
+def prompt_time(message: str) -> dt.time:
+    """Interactively request a time value from the user."""
+
+    while True:
+        try:
+            raw = input(message).strip()
+        except EOFError:
+            print("\nВвод прерван. Выход.")
+            raise SystemExit(1) from None
+
+        if not raw:
+            print("Поле не может быть пустым. Повторите ввод.")
+            continue
+
+        try:
+            return parse_time(raw)
+        except ValueError as exc:
+            print(exc)
+
+
+def prompt_ticker(message: str, *, default: Optional[str] = None) -> str:
+    """Request a ticker (fund code) from the user."""
+
+    while True:
+        try:
+            raw = input(message).strip().upper()
+        except EOFError:
+            print("\nВвод прерван. Выход.")
+            raise SystemExit(1) from None
+
+        if not raw and default:
+            return default
+
+        if not raw:
+            print("Название фонда не может быть пустым. Повторите ввод.")
+            continue
+
+        return raw
 
 
 def fetch_candles(
@@ -259,7 +300,6 @@ def results_to_dataframe(results: Iterable[CandleDiff]) -> pd.DataFrame:
 
 def build_output_path(
     *,
-    provided: Optional[str],
     ticker: str,
     board: str,
     date_from: dt.date,
@@ -268,9 +308,6 @@ def build_output_path(
     end_time: dt.time,
 ) -> Path:
     """Derive the output CSV filename."""
-
-    if provided:
-        return Path(provided)
 
     slug = (
         f"{ticker}_{board}_{date_from.isoformat()}_{date_till.isoformat()}_"
@@ -321,114 +358,85 @@ def save_table(df: pd.DataFrame, path: Path) -> None:
     df_to_save.to_csv(path, index=False, float_format="%.6f")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Create an argument parser for the CLI."""
+def prompt_date_range() -> Tuple[dt.date, dt.date]:
+    """Request a valid date interval from the user."""
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "Загружает минутные свечи MOEX и считает изменение цены между двумя "
-            "временными отметками для каждого торгового дня."
-        )
+    while True:
+        start = prompt_date("Введите начальную дату (YYYY-MM-DD): ")
+        end = prompt_date("Введите конечную дату (YYYY-MM-DD): ")
+
+        if start > end:
+            print("Начальная дата не может быть позже конечной. Повторите ввод.")
+            continue
+
+        return start, end
+
+
+def prompt_time_range() -> Tuple[dt.time, dt.time]:
+    """Request a valid time interval from the user."""
+
+    while True:
+        start = prompt_time("Введите время начала (HH:MM): ")
+        end = prompt_time("Введите время конца (HH:MM): ")
+
+        if start >= end:
+            print("Время начала должно быть раньше времени конца. Повторите ввод.")
+            continue
+
+        return start, end
+
+
+def main() -> int:
+    """Entry point used by the interactive CLI."""
+
+    print("Введите параметры для анализа свечей MOEX:")
+
+    date_from, date_till = prompt_date_range()
+    start_time, end_time = prompt_time_range()
+    ticker = prompt_ticker("Введите название фонда (тикер): ")
+    board = prompt_ticker(
+        (
+            "Введите режим торгов (например, TQTF, Enter для значения по умолчанию"
+            f" {DEFAULT_BOARD}): "
+        ),
+        default=DEFAULT_BOARD,
     )
 
-    parser.add_argument("--ticker", default="TGLD", help="Код бумаги на MOEX (например, SBER)")
-    parser.add_argument(
-        "--board",
-        default="TQTF",
-        help="Режим торгов MOEX (например, TQBR для основных акций)",
-    )
-    parser.add_argument(
-        "--date-from",
-        type=parse_date,
-        help="Начальная дата периода в формате YYYY-MM-DD",
-    )
-    parser.add_argument(
-        "--date-till",
-        type=parse_date,
-        help="Конечная дата периода в формате YYYY-MM-DD",
-    )
-    parser.add_argument(
-        "--start-time",
-        type=parse_time,
-        default=parse_time("09:55"),
-        help="Начальное время (HH:MM)",
-    )
-    parser.add_argument(
-        "--end-time",
-        type=parse_time,
-        default=parse_time("10:15"),
-        help="Конечное время (HH:MM)",
-    )
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=1,
-        choices=range(1, 61),
-        metavar="[1-60]",
-        help="Интервал свечей в минутах",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        help="Путь к CSV-файлу с результатами (по умолчанию формируется автоматически)",
-    )
-
-    return parser
-
-
-def main(argv: Optional[Iterable[str]] = None) -> int:
-    """Entry point used by the CLI."""
-
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if args.date_from is None:
-        args.date_from = prompt_date("Введите начальную дату (YYYY-MM-DD): ")
-
-    if args.date_till is None:
-        args.date_till = prompt_date("Введите конечную дату (YYYY-MM-DD): ")
-
-    if args.date_from > args.date_till:
-        parser.error("--date-from не может быть больше, чем --date-till")
-
-    if args.start_time >= args.end_time:
-        parser.error("--start-time должен быть раньше, чем --end-time")
+    interval = DEFAULT_INTERVAL
 
     print(
         "⏳ Загружаем данные:",
-        f"тикер={args.ticker}",
-        f"режим={args.board}",
-        f"даты={args.date_from}..{args.date_till}",
-        f"интервал={args.interval} мин",
+        f"тикер={ticker}",
+        f"режим={board}",
+        f"даты={date_from}..{date_till}",
+        f"интервал={interval} мин",
     )
 
     try:
         candles = fetch_candles(
-            ticker=args.ticker,
-            board=args.board,
-            interval=args.interval,
-            date_from=args.date_from,
-            date_till=args.date_till,
+            ticker=ticker,
+            board=board,
+            interval=interval,
+            date_from=date_from,
+            date_till=date_till,
         )
     except ValueError as exc:
-        parser.error(str(exc))
+        print(exc, file=sys.stderr)
+        return 1
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    diffs = calculate_diffs(
-        candles, start_time=args.start_time, end_time=args.end_time
-    )
+    diffs = calculate_diffs(candles, start_time=start_time, end_time=end_time)
     table = results_to_dataframe(diffs)
 
     output_path = build_output_path(
-        provided=args.output,
-        ticker=args.ticker,
-        board=args.board,
-        date_from=args.date_from,
-        date_till=args.date_till,
-        start_time=args.start_time,
-        end_time=args.end_time,
+        ticker=ticker,
+        board=board,
+        date_from=date_from,
+        date_till=date_till,
+        start_time=start_time,
+        end_time=end_time,
     )
     save_table(table, output_path)
     print(f"💾 Таблица сохранена в {output_path.resolve()}")
